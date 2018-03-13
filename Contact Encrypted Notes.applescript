@@ -1,4 +1,8 @@
---version 0.1
+--version 0.2
+--config
+set gpgfingerprint to "C649B5542F0D7C380BE45E49D66FB819542591C2"
+--this is the fingerprint gpg will protect your note password with while written on the tempory drive
+
 tell application "Contacts"
 	set contactsSelection to selection
 	if (count of selection) is equal to 1 then
@@ -27,12 +31,30 @@ set oldmessage_file to POSIX file (ramdir & "oldmessage.asc")
 set oldmessage_clear to POSIX file (ramdir & "oldmessage_clear.txt")
 set newmessage_clear to POSIX file (ramdir & "newmessage_clear.txt")
 set newmessage_file to POSIX file (ramdir & "newmessage_clear.txt.asc")
+set password_store_mounted to POSIX file "/Volumes/temppasswordstore/password_store"
+set password_store_enc to POSIX file "/Volumes/temppasswordstore/password_store.asc"
+
+--ask if want to save password until editing done
+set save_password_mount to false
+set temppasswordstore_mounted to (do shell script "if [ -d /Volumes/temppasswordstore/ ]; then echo mounted; fi")
+if temppasswordstore_mounted is not equal to "mounted" then
+	set keepPass to button returned of (display dialog "Remember password for this session?" buttons {"No, Enter it Manually", "Yes and Continue"} default button "Yes and Continue")
+	if keepPass is equal to "Yes and Continue" then
+		do shell script "diskutil partitionDisk $(hdiutil attach -nomount ram://20480) 1 GPTFormat APFS 'temppasswordstore' '100%'"
+		set save_password_mount to true
+	end if
+end if
 
 
 
 -- Get the passphrase and write to file on RAM drive
 try
-	set gpgsym_password to the text returned of (display dialog "Please enter a passphrase" default answer "" with icon stop buttons {"Cancel", "Continue"} default button "Continue" with hidden answer)
+	set temppassword_there to (do shell script "if [ -f /Volumes/temppasswordstore/password_store.asc ]; then echo mounted; fi")
+	if temppassword_there is not equal to "mounted" then
+		set gpgsym_password to the text returned of (display dialog "Please enter a passphrase" default answer "" with icon stop buttons {"Cancel", "Continue"} default button "Continue" with hidden answer)
+	else
+		set gpgsym_password to (do shell script "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/X11/bin:$PATH;gpg --output - -d " & (quoted form of POSIX path of password_store_enc))
+	end if
 on error
 	tell application "Finder"
 		set diskName to "contactsramdisk"
@@ -45,6 +67,13 @@ end try
 
 
 my write_to_file(gpgsym_password, passphrase_file, false)
+if save_password_mount is true then
+	my write_to_file(gpgsym_password, password_store_mounted, false)
+	set enccmd to "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/X11/bin:$PATH;gpg -ae --output " & (quoted form of POSIX path of password_store_enc) & " -r " & gpgfingerprint & " " & (quoted form of POSIX path of password_store_mounted) & " && rm " & (quoted form of POSIX path of password_store_mounted)
+	log enccmd
+	do shell script enccmd
+end if
+
 
 if contactNote_Empty is not true then
 	my write_to_file(encrypted_note_original, oldmessage_file, false)
@@ -98,7 +127,7 @@ if new_message_clear is not equal to oldmessage_clear then
 	
 	--set new_message_enc to (read newmessage_file)
 	set new_message_enc to (do shell script "cat " & (quoted form of POSIX path of newmessage_file) & " | sed '/-----.*/d' | sed '/^$/d'")
-
+	
 	
 	tell application "Contacts"
 		set contactsSelection to selection
@@ -124,7 +153,7 @@ if new_message_clear is not equal to oldmessage_clear then
 		end if
 	end tell
 	
-
+	
 	
 else
 	log "identical"
