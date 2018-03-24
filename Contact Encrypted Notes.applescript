@@ -1,63 +1,66 @@
---version 0.2
---config
-set gpgfingerprint to "C649B5542F0D7C380BE45E49D66FB819542591C2"
---this is the fingerprint gpg will protect your note password with while written on the tempory drive
+-- Version 0.3
 
+-- ###  < Configuration  > ### ---
+set GPGKeyID to "542591C2" -- if you chose to store password it'll be saved in RAM encrypted with this key ID
+
+-- ###   </ Configuration >   ### ---
+
+
+
+
+-- Get note from selected Contact
 tell application "Contacts"
 	set contactsSelection to selection
 	if (count of selection) is equal to 1 then
 		repeat with contactcard in contactsSelection
-			set encrypted_note_original to note of contactcard
+			set contact_note_initial to note of contactcard
 		end repeat
 	end if
 end tell
 
-log encrypted_note_original
 
-set contactNote_Empty to false
-if encrypted_note_original is equal to missing value then set contactNote_Empty to true
-if encrypted_note_original is equal to "" then set contactNote_Empty to true
-set encrypted_note_original to "-----BEGIN PGP MESSAGE-----
+-- Check if there is already a note there to either add or edit
+set note_is_empty_bool to false
+if contact_note_initial is equal to missing value then set note_is_empty_bool to true
+if contact_note_initial is equal to "" then set note_is_empty_bool to true
+set contact_note_initial to "-----BEGIN PGP MESSAGE-----
 
-" & encrypted_note_original & "
+" & contact_note_initial & "
 " & "-----END PGP MESSAGE-----"
 
 
--- Secure RAM setup
-do shell script "diskutil partitionDisk $(hdiutil attach -nomount ram://20480) 1 GPTFormat APFS 'contactsramdisk' '100%'"
-set ramdir to "/Volumes/contactsramdisk/"
-set passphrase_file to POSIX file (ramdir & "passphrase.txt")
-set oldmessage_file to POSIX file (ramdir & "oldmessage.asc")
-set oldmessage_clear to POSIX file (ramdir & "oldmessage_clear.txt")
-set newmessage_clear to POSIX file (ramdir & "newmessage_clear.txt")
-set newmessage_file to POSIX file (ramdir & "newmessage_clear.txt.asc")
-set password_store_mounted to POSIX file "/Volumes/temppasswordstore/password_store"
+-- RAM drive & files setup
+do shell script "diskutil partitionDisk $(hdiutil attach -nomount ram://20480) 1 GPTFormat APFS 'contactsram_disk' '100%'"
+set ram_disk to "/Volumes/contactsram_disk/"
+set passphrase_file_clear to POSIX file (ram_disk & "passphrase.txt")
+set contact_note_initial_file_encrypted to POSIX file (ram_disk & "oldmessage.asc")
+set contact_note_initial_file_clear to POSIX file (ram_disk & "contact_note_initial_file_clear.txt")
+set contact_note_modified_file_clear to POSIX file (ram_disk & "contact_note_modified_file_clear.txt")
+set contact_note_modified_file_encrypted to POSIX file (ram_disk & "contact_note_modified_file_clear.txt.asc")
+set passphrase_file_encrypted to POSIX file "/Volumes/temppasswordstore/password_store"
 set password_store_enc to POSIX file "/Volumes/temppasswordstore/password_store.asc"
 
---ask if want to save password until editing done
-set save_password_mount to false
-set temppasswordstore_mounted to (do shell script "if [ -d /Volumes/temppasswordstore/ ]; then echo mounted; fi")
-if temppasswordstore_mounted is not equal to "mounted" then
-	set keepPass to button returned of (display dialog "Remember password for this session?" buttons {"No, Enter it Manually", "Yes and Continue"} default button "Yes and Continue")
-	if keepPass is equal to "Yes and Continue" then
+-- Ask to save password until editing is completed, only bother asking if password isn't already mounted though
+set remember_password_bool to false
+if not (do shell script "if [ -d /Volumes/temppasswordstore/ ]; then echo yes;else echo no; fi") as boolean then
+	if (button returned of (display dialog "Remember password for this session?" buttons {"No, Enter it Manually", "Yes and Continue"} default button "Yes and Continue")) is equal to "Yes and Continue" then
 		do shell script "diskutil partitionDisk $(hdiutil attach -nomount ram://20480) 1 GPTFormat APFS 'temppasswordstore' '100%'"
-		set save_password_mount to true
+		set remember_password_bool to true
 	end if
 end if
 
 
 
--- Get the passphrase and write to file on RAM drive
+-- Get the passphrase from file if its mounted, or by asking if not
 try
-	set temppassword_there to (do shell script "if [ -f /Volumes/temppasswordstore/password_store.asc ]; then echo mounted; fi")
-	if temppassword_there is not equal to "mounted" then
-		set gpgsym_password to the text returned of (display dialog "Please enter a passphrase" default answer "" with icon stop buttons {"Cancel", "Continue"} default button "Continue" with hidden answer)
+	if not (do shell script "if [ -f /Volumes/temppasswordstore/password_store.asc ]; then echo yes;else echo no; fi") as boolean then
+		set passphrase to the text returned of (display dialog "Please enter a passphrase" default answer "" with icon stop buttons {"Cancel", "Continue"} default button "Continue" with hidden answer)
 	else
-		set gpgsym_password to (do shell script "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/X11/bin:$PATH;gpg --output - -d " & (quoted form of POSIX path of password_store_enc))
+		set passphrase to (do shell script "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/X11/bin:$PATH;gpg --output - -d " & (quoted form of POSIX path of password_store_enc))
 	end if
 on error
 	tell application "Finder"
-		set diskName to "contactsramdisk"
+		set diskName to "contactsram_disk"
 		if disk diskName exists then
 			eject disk diskName
 			error "Operation Cancelled"
@@ -66,25 +69,25 @@ on error
 end try
 
 
-my write_to_file(gpgsym_password, passphrase_file, false)
-if save_password_mount is true then
-	my write_to_file(gpgsym_password, password_store_mounted, false)
-	set enccmd to "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/X11/bin:$PATH;gpg -ae --output " & (quoted form of POSIX path of password_store_enc) & " -r " & gpgfingerprint & " " & (quoted form of POSIX path of password_store_mounted) & " && rm " & (quoted form of POSIX path of password_store_mounted)
-	log enccmd
-	do shell script enccmd
+-- Write the passphrase to file in clear on temp RAM drive, and encrypt it if it needs to be saved for the session
+my write_to_file(passphrase, passphrase_file_clear, false)
+if remember_password_bool is true then
+	my write_to_file(passphrase, passphrase_file_encrypted, false)
+	set encrypt_passphrase_cmd to "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/X11/bin:$PATH;gpg -ae --output " & (quoted form of POSIX path of password_store_enc) & " -r " & GPGKeyID & " " & (quoted form of POSIX path of passphrase_file_encrypted) & " && rm " & (quoted form of POSIX path of passphrase_file_encrypted)
+	do shell script encrypt_passphrase_cmd
 end if
 
 
-if contactNote_Empty is not true then
-	my write_to_file(encrypted_note_original, oldmessage_file, false)
+if note_is_empty_bool is not true then
+	my write_to_file(contact_note_initial, contact_note_initial_file_encrypted, false)
 	
-	set decrypt_cmd to "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/X11/bin:$PATH;gpg --batch --output " & (quoted form of POSIX path of oldmessage_clear) & " --passphrase-file " & (quoted form of POSIX path of passphrase_file) & " --decrypt " & (quoted form of POSIX path of oldmessage_file)
+	set decrypt_passphrase_cmd to "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/X11/bin:$PATH;gpg --batch --output " & (quoted form of POSIX path of contact_note_initial_file_clear) & " --passphrase-file " & (quoted form of POSIX path of passphrase_file_clear) & " --decrypt " & (quoted form of POSIX path of contact_note_initial_file_encrypted)
 	
 	try
-		do shell script decrypt_cmd
+		do shell script decrypt_passphrase_cmd
 	on error
 		tell application "Finder"
-			set diskName to "contactsramdisk"
+			set diskName to "contactsram_disk"
 			if disk diskName exists then
 				eject disk diskName
 				error "Wrong Encryption Key"
@@ -93,10 +96,11 @@ if contactNote_Empty is not true then
 	end try
 	
 	try
-		set new_message_clear to the text returned of (display dialog "" default answer (read oldmessage_clear) buttons {"Cancel", "Continue"} default button "Continue")
+		-- Give prompt to change existing note for selected contact
+		set contact_note_modified to the text returned of (display dialog "" default answer (read contact_note_initial_file_clear) buttons {"Cancel", "Continue"} default button "Continue")
 	on error
 		tell application "Finder"
-			set diskName to "contactsramdisk"
+			set diskName to "contactsram_disk"
 			if disk diskName exists then
 				eject disk diskName
 				error "Cancelled"
@@ -105,10 +109,11 @@ if contactNote_Empty is not true then
 	end try
 else
 	try
-		set new_message_clear to the text returned of (display dialog "" default answer (linefeed) buttons {"Cancel", "Continue"} default button "Continue")
+		-- Give prompt to start a note for selected contact
+		set contact_note_modified to the text returned of (display dialog "" default answer (linefeed) buttons {"Cancel", "Continue"} default button "Continue")
 	on error
 		tell application "Finder"
-			set diskName to "contactsramdisk"
+			set diskName to "contactsram_disk"
 			if disk diskName exists then
 				eject disk diskName
 				error "Cancelled"
@@ -117,50 +122,35 @@ else
 	end try
 end if
 
-if new_message_clear is not equal to oldmessage_clear then
+
+-- If note is changed, save it and encrypt it
+if contact_note_modified is not equal to contact_note_initial_file_clear then
+	my write_to_file(contact_note_modified, contact_note_modified_file_clear, false)
+	set encrypt_modified_note_cmd to "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/X11/bin:$PATH;gpg --batch --armor --symmetric --cipher-algo AES256 --passphrase-file " & (quoted form of POSIX path of passphrase_file_clear) & " " & (quoted form of POSIX path of contact_note_modified_file_clear) & " && rm " & (quoted form of POSIX path of contact_note_modified_file_clear) & "; rm -f " & (quoted form of POSIX path of contact_note_initial_file_clear) & "; rm " & (quoted form of POSIX path of passphrase_file_clear) & "; rm -f " & (quoted form of POSIX path of contact_note_initial_file_encrypted)
+	do shell script encrypt_modified_note_cmd
 	
-	my write_to_file(new_message_clear, newmessage_clear, false)
+	set contact_note_modified_encrypted to (do shell script "cat " & (quoted form of POSIX path of contact_note_modified_file_encrypted) & " | sed '/-----.*/d' | sed '/^$/d'")
 	
-	set encrypt_cmd to "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/X11/bin:$PATH;gpg --batch --armor --symmetric --cipher-algo AES256 --passphrase-file " & (quoted form of POSIX path of passphrase_file) & " " & (quoted form of POSIX path of newmessage_clear) & " && rm " & (quoted form of POSIX path of newmessage_clear) & "; rm -f " & (quoted form of POSIX path of oldmessage_clear) & "; rm " & (quoted form of POSIX path of passphrase_file) & "; rm -f " & (quoted form of POSIX path of oldmessage_file)
-	
-	do shell script encrypt_cmd
-	
-	--set new_message_enc to (read newmessage_file)
-	set new_message_enc to (do shell script "cat " & (quoted form of POSIX path of newmessage_file) & " | sed '/-----.*/d' | sed '/^$/d'")
-	
-	
+	-- Add modified note to the contact
 	tell application "Contacts"
 		set contactsSelection to selection
 		if (count of selection) is equal to 1 then
 			repeat with contactcard in contactsSelection
-				set note of contactcard to new_message_enc
+				set note of contactcard to contact_note_modified_encrypted
 			end repeat
 			save
 		end if
 	end tell
 	
-	do shell script "rm " & (quoted form of POSIX path of newmessage_file)
+	do shell script "rm " & (quoted form of POSIX path of contact_note_modified_file_encrypted)
 	
 	
-	-- test it correctly set
-	tell application "Contacts"
-		set contactsSelection to selection
-		if (count of selection) is equal to 1 then
-			repeat with contactcard in contactsSelection
-				log (note of contactcard)
-			end repeat
-			save
-		end if
-	end tell
-	
-	
-	
-else
-	log "identical"
 end if
 
+
+-- Eject our RAM disk (and thus delete its contents)
 tell application "Finder"
-	set diskName to "contactsramdisk"
+	set diskName to "contactsram_disk"
 	if disk diskName exists then
 		eject disk diskName
 	end if
@@ -168,6 +158,7 @@ end tell
 
 
 
+-- Subroutines
 on write_to_file(this_data, target_file, append_data) -- (string, file path as string, boolean)
 	try
 		set the target_file to the target_file as text
